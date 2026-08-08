@@ -1,0 +1,12 @@
+{
+  "symbol": "USD/JPY",
+  "interval": "1h",
+  "sma_length": 20,
+  "resistance_lookback": 20,
+  "max_pullback_bars": 12,
+  "retest_tolerance_pips": 5.0,
+  "require_bullish_candle": true,
+  "stop_pips": 30.0,
+  "risk_reward": 2.0,
+  "pip_size": 0.01
+}
