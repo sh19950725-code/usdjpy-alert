@@ -1,0 +1,38 @@
+name: USDJPY alert
+
+on:
+  schedule:
+    - cron: "8 * * * *"
+
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: "Send a test notification only"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usdjpy-hourly-alert
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      SIGNAL_ENABLED: ${{ vars.SIGNAL_ENABLED || 'true' }}
+      TEST_NOTIFICATION: ${{ github.event_name == 'workflow_dispatch' && inputs.test_notification || 'false' }}
+
+    steps:
+      - name: Get files
+        uses: actions/checkout@v4
+
+      - name: Check USDJPY
+        run: python signal_monitor.py
