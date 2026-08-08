@@ -67,11 +67,23 @@ def fetch_candles(config: dict, api_key: str) -> list[dict]:
     return candles
 
 
-def fetch_economic_calendar() -> list[dict]:
-    payload = request_json("https://nfs.faireconomy.media/ff_calendar_thisweek.json")
-    if not isinstance(payload, list):
+def fetch_economic_calendar(now: datetime | None = None) -> list[dict]:
+    now = now or datetime.now(timezone.utc)
+    params = urllib.parse.urlencode(
+        {
+            "from": (now - timedelta(days=2)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "to": (now + timedelta(days=2)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "countries": "US,JP",
+        }
+    )
+    payload = request_json(
+        f"https://economic-calendar.tradingview.com/events?{params}",
+        headers={"Origin": "https://www.tradingview.com", "User-Agent": "Mozilla/5.0"},
+    )
+    events = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(events, list):
         raise RuntimeError("経済カレンダーの形式が想定と異なります。")
-    return payload
+    return events
 
 
 def parse_event_time(value: str) -> datetime:
@@ -91,9 +103,11 @@ def blocking_event(config: dict, now: datetime | None = None) -> dict | None:
     before = timedelta(minutes=float(config.get("news_pause_before_minutes", 60)))
     after = timedelta(minutes=float(config.get("news_pause_after_minutes", 60)))
 
-    for event in fetch_economic_calendar():
+    for event in fetch_economic_calendar(now):
         currency = str(event.get("country", event.get("currency", ""))).upper()
-        impact = str(event.get("impact", "")).lower()
+        raw_impact = event.get("impact", event.get("importance", ""))
+        # TradingView represents high importance as 1; other providers may use "High".
+        impact = "high" if raw_impact == 1 or str(raw_impact) == "1" else str(raw_impact).lower()
         if currency not in currencies or impact not in impacts:
             continue
         event_time = parse_event_time(str(event["date"]))
