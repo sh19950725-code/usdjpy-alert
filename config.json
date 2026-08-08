@@ -8,5 +8,11 @@
   "require_bullish_candle": true,
   "stop_pips": 30.0,
   "risk_reward": 2.0,
-  "pip_size": 0.01
+  "pip_size": 0.01,
+  "news_filter_enabled": true,
+  "news_currencies": ["USD", "JPY"],
+  "news_impacts": ["High"],
+  "news_pause_before_minutes": 60,
+  "news_pause_after_minutes": 60,
+  "calendar_fail_closed": true
 }

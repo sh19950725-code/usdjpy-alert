@@ -67,6 +67,41 @@ def fetch_candles(config: dict, api_key: str) -> list[dict]:
     return candles
 
 
+def fetch_economic_calendar() -> list[dict]:
+    payload = request_json("https://nfs.faireconomy.media/ff_calendar_thisweek.json")
+    if not isinstance(payload, list):
+        raise RuntimeError("経済カレンダーの形式が想定と異なります。")
+    return payload
+
+
+def parse_event_time(value: str) -> datetime:
+    # Calendar values include a UTC offset. Accept a trailing Z as well.
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("経済指標の日時にタイムゾーンがありません。")
+    return parsed.astimezone(timezone.utc)
+
+
+def blocking_event(config: dict, now: datetime | None = None) -> dict | None:
+    if not config.get("news_filter_enabled", True):
+        return None
+    now = now or datetime.now(timezone.utc)
+    currencies = {str(item).upper() for item in config.get("news_currencies", ["USD", "JPY"])}
+    impacts = {str(item).lower() for item in config.get("news_impacts", ["High"])}
+    before = timedelta(minutes=float(config.get("news_pause_before_minutes", 60)))
+    after = timedelta(minutes=float(config.get("news_pause_after_minutes", 60)))
+
+    for event in fetch_economic_calendar():
+        currency = str(event.get("country", event.get("currency", ""))).upper()
+        impact = str(event.get("impact", "")).lower()
+        if currency not in currencies or impact not in impacts:
+            continue
+        event_time = parse_event_time(str(event["date"]))
+        if event_time - before <= now <= event_time + after:
+            return {**event, "event_time_utc": event_time}
+    return None
+
+
 def sma(candles: list[dict], index: int, length: int) -> float | None:
     if index + 1 < length:
         return None
@@ -180,6 +215,21 @@ def main() -> int:
         return 0
 
     config = load_config()
+    try:
+        event = blocking_event(config)
+    except Exception as exc:
+        if config.get("calendar_fail_closed", True):
+            print(f"経済カレンダーを確認できないため、安全のため見送ります: {exc}")
+            return 0
+        print(f"警告: 経済カレンダーを確認できませんでした: {exc}", file=sys.stderr)
+        event = None
+
+    if event is not None:
+        event_jst = event["event_time_utc"].astimezone(timezone(timedelta(hours=9)))
+        event_name = event.get("title", event.get("event", "重要指標"))
+        print(f"重要指標フィルターで見送り: {event_jst:%Y-%m-%d %H:%M} JST {event_name}")
+        return 0
+
     candles = fetch_candles(config, api_key)
     required = max(int(config["sma_length"]), int(config["resistance_lookback"])) + int(config["max_pullback_bars"]) + 2
     if len(candles) < required:
