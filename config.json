@@ -14,5 +14,6 @@
   "news_impacts": ["High"],
   "news_pause_before_minutes": 60,
   "news_pause_after_minutes": 60,
-  "calendar_fail_closed": true
+  "calendar_fail_closed": true,
+  "notify_on_no_signal": true
 }

@@ -128,7 +128,7 @@ def resistance(candles: list[dict], index: int, lookback: int) -> float | None:
     return max(candle["high"] for candle in candles[index - lookback : index])
 
 
-def latest_signal(candles: list[dict], config: dict) -> dict | None:
+def evaluate_latest(candles: list[dict], config: dict) -> tuple[dict | None, str]:
     sma_length = int(config["sma_length"])
     lookback = int(config["resistance_lookback"])
     max_bars = int(config["max_pullback_bars"])
@@ -138,8 +138,10 @@ def latest_signal(candles: list[dict], config: dict) -> dict | None:
     broken_level = None
     breakout_index = None
     signals = []
+    latest_reason = "条件を確認できませんでした。"
 
     for index, candle in enumerate(candles):
+        is_latest = index == len(candles) - 1
         average = sma(candles, index, sma_length)
         level = resistance(candles, index, lookback)
         previous_level = resistance(candles, index - 1, lookback) if index else None
@@ -158,12 +160,28 @@ def latest_signal(candles: list[dict], config: dict) -> dict | None:
             waiting = True
             broken_level = level
             breakout_index = index
+            if is_latest:
+                latest_reason = "レジスタンスを上抜けた直後です。次の足以降の押し目を待っています。"
 
         if not waiting:
+            if is_latest:
+                if average is None or level is None:
+                    latest_reason = "判定に必要なローソク足が不足しています。"
+                elif candle["close"] <= average:
+                    latest_reason = f"終値 {candle['close']:.3f} が20SMA {average:.3f} 以下です。"
+                elif candle["close"] <= level:
+                    latest_reason = f"20SMAより上ですが、レジスタンス {level:.3f} をまだ上抜けていません。"
+                else:
+                    latest_reason = "新しいレジスタンス上抜けではないため、見送ります。"
             continue
 
         bars_since = index - breakout_index
         if bars_since > max_bars or candle["close"] < broken_level - tolerance:
+            if is_latest:
+                if bars_since > max_bars:
+                    latest_reason = f"上抜け後{max_bars}本以内に押し目が成立せず、待機期限を超えました。"
+                else:
+                    latest_reason = f"終値が上抜け水準 {broken_level:.3f} を下回り、パターンが無効になりました。"
             waiting = False
             broken_level = None
             breakout_index = None
@@ -191,10 +209,28 @@ def latest_signal(candles: list[dict], config: dict) -> dict | None:
             waiting = False
             broken_level = None
             breakout_index = None
+        elif is_latest:
+            if candle["low"] > broken_level + tolerance:
+                latest_reason = f"上抜け済みですが、安値 {candle['low']:.3f} が押し目水準 {broken_level:.3f} まで戻っていません。"
+            elif candle["low"] < broken_level - tolerance:
+                latest_reason = f"押し目が許容幅を超えて深くなりました（基準 {broken_level:.3f}）。"
+            elif candle["close"] <= broken_level:
+                latest_reason = f"押し目には到達しましたが、終値が上抜け水準 {broken_level:.3f} を回復していません。"
+            elif average is not None and candle["close"] <= average:
+                latest_reason = f"押し目には到達しましたが、終値が20SMA {average:.3f} 以下です。"
+            elif not bullish:
+                latest_reason = "押し目には到達しましたが、確定足が陽線ではありません。"
+            else:
+                latest_reason = "押し目反発の全条件がまだ揃っていません。"
 
     if signals and signals[-1]["time"] == candles[-1]["time"]:
-        return signals[-1]
-    return None
+        return signals[-1], "買い条件が成立しました。"
+    return None, latest_reason
+
+
+def notify_no_signal(config: dict, topic: str, message: str) -> None:
+    if config.get("notify_on_no_signal", True):
+        publish_ntfy(topic, "USD/JPY 見送り", message, "no_entry")
 
 
 def publish_ntfy(topic: str, title: str, message: str, tags: str = "chart_with_upwards_trend") -> None:
@@ -233,7 +269,9 @@ def main() -> int:
         event = blocking_event(config)
     except Exception as exc:
         if config.get("calendar_fail_closed", True):
-            print(f"経済カレンダーを確認できないため、安全のため見送ります: {exc}")
+            reason = f"経済カレンダーを確認できないため、安全のため見送ります。\n詳細: {exc}"
+            print(reason)
+            notify_no_signal(config, topic, reason)
             return 0
         print(f"警告: 経済カレンダーを確認できませんでした: {exc}", file=sys.stderr)
         event = None
@@ -241,7 +279,9 @@ def main() -> int:
     if event is not None:
         event_jst = event["event_time_utc"].astimezone(timezone(timedelta(hours=9)))
         event_name = event.get("title", event.get("event", "重要指標"))
-        print(f"重要指標フィルターで見送り: {event_jst:%Y-%m-%d %H:%M} JST {event_name}")
+        reason = f"重要指標フィルターで見送ります。\n{event_jst:%Y-%m-%d %H:%M} JST {event_name}"
+        print(reason)
+        notify_no_signal(config, topic, reason)
         return 0
 
     candles = fetch_candles(config, api_key)
@@ -249,9 +289,12 @@ def main() -> int:
     if len(candles) < required:
         raise RuntimeError(f"ローソク足が不足しています: {len(candles)}本")
 
-    signal = latest_signal(candles, config)
+    signal, reason = evaluate_latest(candles, config)
     if signal is None:
-        print(f"{candles[-1]['time'].isoformat()}: 買い条件なし（見送り）")
+        candle_jst = candles[-1]["time"].astimezone(timezone(timedelta(hours=9)))
+        message = f"確定足: {candle_jst:%Y-%m-%d %H:%M} JST\n理由: {reason}"
+        print(f"買い条件なし（見送り）: {reason}")
+        notify_no_signal(config, topic, message)
         return 0
 
     jst = signal["time"].astimezone(timezone(timedelta(hours=9)))
